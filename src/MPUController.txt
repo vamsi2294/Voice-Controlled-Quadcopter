@@ -1,0 +1,1176 @@
+//------------------------------ LIBRARIES ------------------------- 
+#include <Math.h>
+#include <PID_v1.h>
+#include <Servo.h>
+#include <SPI.h>
+#include <Wire.h>
+#include <I2Cdev.h>
+#include <helper_3dmath.h>
+#include <MPU6050_6Axis_MotionApps20.h>
+//#include <VirtualWire.h>
+#include <RH_ASK.h>
+#include <SPI.h> // Not actualy used but needed to compile
+RH_ASK driver;
+//------------------------------ LIBRARIES -------------------------
+#if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
+    #include "Wire.h"
+#endif
+MPU6050 mpu;
+#define OUTPUT_READABLE_YAWPITCHROLL
+//Define Variables we'll be connecting to
+double Input1;
+double Setpoint1;
+double Input2;
+double Setpoint2;
+double Input3;
+// PID variables
+double pid_roll_in,   pid_roll_out,   pid_roll_setpoint = 0;
+double pid_pitch_in,  pid_pitch_out,  pid_pitch_setpoint = 0;
+double pid_yaw_in,    pid_yaw_out,    pid_yaw_setpoint = 0;
+const int receive_pin = 1;
+double Output1;
+double Output2;
+double Output3;
+double Output4;
+uint8_t msg[3];
+//Specify the links and initial tuning parameters
+PID roll_controller(&pid_roll_in,   &Output1,  &pid_roll_setpoint,  1.0, 0.02, 0.0, REVERSE);
+PID pitch_controller(&pid_pitch_in, &Output2, &pid_pitch_setpoint, 1.0, 0.02, 0.0, REVERSE);
+PID yaw_controller(&pid_yaw_in,     &Output3,   &pid_yaw_setpoint,   2.0, 0.0, 0.0, DIRECT); 
+
+
+Servo motor1;
+Servo motor2;
+Servo motor3;
+Servo motor4;
+//-------PID Config----------
+#define ROLL_PID_KP  0.250
+#define ROLL_PID_KI  0.950
+#define ROLL_PID_KD  0.011
+#define ROLL_PID_MIN  -200.0
+#define ROLL_PID_MAX  200.0
+
+#define PITCH_PID_KP  0.250
+#define PITCH_PID_KI  0.950
+#define PITCH_PID_KD  0.011
+#define PITCH_PID_MIN  -200.0
+#define PITCH_PID_MAX  200.0
+
+#define YAW_PID_KP  0.680
+#define YAW_PID_KI  0.500
+#define YAW_PID_KD  0.0001
+#define YAW_PID_MIN  -100.0
+#define YAW_PID_MAX  100.0
+
+#define ROLL_RMIN  THROTTLE_RMIN
+#define ROLL_RMAX  THROTTLE_RMAX
+#define ROLL_WMIN  -30
+#define ROLL_WMAX  30
+
+#define PITCH_RMIN  THROTTLE_RMIN
+#define PITCH_RMAX  THROTTLE_RMAX
+#define PITCH_WMIN  -30
+#define PITCH_WMAX  30
+
+#define YAW_RMIN  THROTTLE_RMIN
+#define YAW_RMAX  THROTTLE_RMAX
+#define YAW_WMIN  -30
+#define YAW_WMAX  30
+//-------------------------
+
+/*------(Maximum and Minimum Values)------*/
+int m[4];  
+int p[4];
+int s[4];
+int motormax = 2000;
+int low = 38;
+int high = 42;
+int low2 = 5;
+//========================================================================================================
+//========================================      MPU Objects       ========================================
+//========================================================================================================
+bool blinkState = false;
+// MPU control/status vars
+bool dmpReady = false;  // set true if DMP init was successful
+uint8_t mpuIntStatus;   // holds actual interrupt status byte from MPU
+uint8_t devStatus;      // return status after each device operation (0 = success, !0 = error)
+uint16_t packetSize;    // expected DMP packet size (default is 42 bytes)
+uint16_t fifoCount;     // count of all bytes currently in FIFO
+uint8_t fifoBuffer[64]; // FIFO storage buffer
+// orientation/motion vars
+Quaternion q;           // [w, x, y, z]         quaternion container
+VectorInt16 aa;         // [x, y, z]            accel sensor measurements
+VectorInt16 aaReal;     // [x, y, z]            gravity-free accel sensor measurements
+VectorInt16 aaWorld;    // [x, y, z]            world-frame accel sensor measurements
+VectorFloat gravity;    // [x, y, z]            gravity vector
+float euler[3];         // [psi, theta, phi]    Euler angle container
+float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
+float yprd[2];          // [pitch, roll]        Datum position
+/*------ MPU control/status vars ------*/
+volatile bool mpuInterrupt = false;   // indicates whether MPU interrupt pin has gone high
+void dmpDataReady()
+{
+  mpuInterrupt = true;
+}
+//=========================================================================================================
+//========================================      End MPU Objects     =======================================
+//=========================================================================================================
+/*----------------------------------------------------------------------------*/
+// ======================================================================================================
+// ===============================                   SETUP                  =============================
+// =======================================================================================================
+void setup()
+{
+   // SetSampleTime(100);
+    Input1 = ypr[1];
+    Input2 = ypr[2]; 
+    Input3 = ypr[0];
+        //=======================================
+    //======         PID Setup         ======
+    //=======================================  
+  
+pid_initialize();
+    //=======================================
+    //=====         Radio Setup         =====
+    //=======================================
+    /* vw_set_rx_pin(receive_pin);
+    vw_setup(2000);  // Bits per sec
+    vw_rx_start();*/
+    if (!driver.init())
+         Serial.println("init failed");     //radio head 
+    /*============================================*/
+    /*============  End Radio Setup   ============*/
+    /*============================================*/
+    /*----------------------------------------------------------------------------*/
+    //=======================================
+    //=====         Motors setup        =====
+    //=======================================
+      motor1.attach(3); 
+      motor2.attach(5); 
+      motor3.attach(6);
+      motor4.attach(9);
+       m[0]=700;
+   m[1]=700;
+   m[2]=700;
+    m[3]=700;
+      p[0]=700;
+   p[1]=700;
+   p[2]=700;
+    p[3]=700;
+   
+    //===================================
+    //=====       MPU Setup         =====
+    //===================================
+    #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
+        Wire.begin();
+        //        TWBR = 24; // 400kHz I2C clock (200kHz if CPU is 8MHz)
+    #elif I2CDEV_IMPLEMENTATION == I2CDEV_BUILTIN_FASTWIRE
+        Fastwire::setup(400, true);
+    #endif
+
+    // initialize serial communication
+    // (115200 chosen because it is required for Teapot Demo output, but it's
+    // really up to you depending on your project)
+    Serial.begin(115200);
+   // while (!Serial); // wait for Leonardo enumeration, others continue immediately
+    // initialize device
+    Serial.println(F("Initializing I2C devices..."));
+    mpu.initialize();
+    // verify connection
+    Serial.println(F("Testing device connections..."));
+    Serial.println(mpu.testConnection() ? F("MPU6050 connection successful") : F("MPU6050 connection failed"));
+    // wait for ready
+    Serial.println(F("\nSend any character to begin DMP programming and demo: "));
+    //while (Serial.available() && Serial.read()); // empty buffer
+  //  while (!Serial.available());                 // wait for data
+   // while (Serial.available() && Serial.read()); // empty buffer again
+
+    // load and configure the DMP
+    Serial.println(F("Initializing DMP..."));
+    devStatus = mpu.dmpInitialize();
+
+    // supply your own gyro offsets here, scaled for min sensitivity
+    mpu.setXGyroOffset(136);
+    mpu.setYGyroOffset(32);
+    mpu.setZGyroOffset(-39);
+    mpu.setZAccelOffset(1521); // 1688 factory default for my test chip
+    mpu.setXAccelOffset(-1973);
+    mpu.setYAccelOffset(-1154);
+    // make sure it worked (returns 0 if so)
+    if (devStatus == 0) {
+        // turn on the DMP, now that it's ready
+        Serial.println(F("Enabling DMP..."));
+        mpu.setDMPEnabled(true);
+
+        // enable Arduino interrupt detection
+        Serial.println(F("Enabling interrupt detection (Arduino external interrupt 0)..."));
+        attachInterrupt(0, dmpDataReady, RISING);
+        mpuIntStatus = mpu.getIntStatus();
+
+        // set our DMP Ready flag so the main loop() function knows it's okay to use it
+        Serial.println(F("DMP ready! Waiting for first interrupt..."));
+        dmpReady = true;
+
+        // get expected DMP packet size for later comparison
+        packetSize = mpu.dmpGetFIFOPacketSize();
+    } else {
+        // ERROR!
+        // 1 = initial memory load failed
+        // 2 = DMP configuration updates failed
+        // (if it's going to break, usually the code will be 1)
+        Serial.print(F("DMP Initialization failed (code "));
+        Serial.print(devStatus);
+        Serial.println(F(")"));
+    }     // get expected DMP packet size for later comparison 
+    //==========================================================================================
+    //=====      End MPU Setup       ===========================================================
+    //==========================================================================================
+    /*----------------------------------------------------------------------------*/    
+}
+void loop(){
+            if(m[0]>1405){
+              m[0]=1405;
+            }
+            if(m[1]>1405){
+              m[1]=1405;
+            }
+              if(m[2]>1400){
+              m[2]=1400;
+            }
+              if(m[3]>1400){
+              m[3]=1400;
+            }
+            if(m[0]<700){
+              m[0]=700;
+              m[1]=700;
+              m[2]=700;
+              m[3]=700;
+            }
+            if(m[1]<700){
+              m[0]=700;
+              m[1]=700;
+              m[2]=700;
+              m[3]=700;
+              p[0]=m[0];
+ 	      p[1]=m[1];
+              p[2]=m[2];
+              p[3]=m[3];
+            }
+            if(m[2]<700){
+              m[0]=700;
+              m[1]=700;
+              m[2]=700;
+              m[3]=700;
+              p[0]=m[0];
+  	      p[1]=m[1];
+ 	      p[2]=m[2];
+  	      p[3]=m[3];
+            }
+            if(m[3]<700){
+              m[0]=700;
+              m[1]=700;
+              m[2]=700;
+              m[3]=700;
+              p[0]=m[0] ;
+              p[1]=m[1];
+              p[2]=m[2];
+              p[3]=m[3];
+            }
+                     
+            /*===== Set Datum for PITCH && ROLL ======*/
+            yprd[0] = 0; //      Datum Pitch
+            yprd[1] = 0; //      Datum Roll
+  
+            Setpoint1 = 4.54;    // Pitch
+            Setpoint2 = -0.55;    // Roll   
+            Input1 = ypr[1];
+            Input2 = ypr[2];
+            Input3 = ypr[0];  
+            getposition();
+		/*REception*/
+    uint8_t buf[RH_ASK_MAX_MESSAGE_LEN];
+    uint8_t buflen = sizeof(buf);
+
+    if (driver.recv(buf, &buflen)) // Non-blocking
+    {
+  int i;
+
+  // Message with a good checksum received, dump it.
+//  driver.printBuffer("Got:", buf, buflen);
+    }
+    
+uint8_t msg=buf[1];
+pid_update();
+  pid_compute();
+if(mpu.testConnection()){
+  
+   switch(msg){
+            case 'U':
+            getStability();getStability();getStability();getStability();getStability();getStability();
+            getStability();getStability();getStability();getStability();getStability();getStability();
+            getStability();getStability();getStability();getStability();getStability();getStability();
+                getStability();getStability();getStability();
+            
+   // ------------------------------------ ( 1 ALL THROTTLE) ------------------------------------
+if((m[0]<1405)||(m[1]<1405)||(m[2]<1400)||(m[3]<1400)){
+
+  m[0] = 1405 ;
+  m[1] =1405  ;
+  m[2] =  1400;
+  m[3] = 1400;   
+    
+}
+              motor1.writeMicroseconds(s[0]);
+              motor2.writeMicroseconds(s[1]);
+              motor3.writeMicroseconds(s[2]);
+              motor4.writeMicroseconds(s[3]);  
+  p[0] =m[0];
+  p[1] =m[1];
+  p[2] =m[2];
+  p[3] =m[3];  
+      Serial.print("up\t"); Serial.print("\t");
+      Serial.print(Output1);
+      Serial.print("\t");
+      Serial.print(Output2);
+      Serial.print("\t");
+      Serial.print(Output3);
+      Serial.print("\t");
+      Serial.print(Output4);
+      Serial.print("\t");
+      Serial.print(s[0]);
+      Serial.print("\t");
+      Serial.print(s[1]);
+      Serial.print("\t");
+      Serial.print(s[2]);
+      Serial.print("\t");
+      Serial.print(s[3]);
+      Serial.print("\t");
+      Serial.print("\n"); 
+     getStability();
+      
+                
+            break;
+    
+    
+// ------------------------------------ ( 2 RIGHT) ------------------------------------
+            case 'R':
+            {  
+            getStability();getStability();getStability();getStability();getStability();getStability();
+            getStability();getStability();getStability();getStability();getStability();getStability();
+            getStability();getStability();getStability();getStability();getStability();getStability();
+            getStability();getStability();getStability();
+  if(m[1]>1100){ 
+  m[1] = m[1]-1;
+  }
+  if(m[2]>1100){
+  m[2] = m[2]-1;}
+  p[0] = m[0] ;
+  p[1] =m[1]  ;
+  p[2] =m[2];
+  p[3] =m[3];
+              motor1.writeMicroseconds(s[0]);
+              motor2.writeMicroseconds(s[1]);
+              motor3.writeMicroseconds(s[2]);
+              motor4.writeMicroseconds(s[3]);   
+      Serial.print("Right\t"); Serial.print("\t");
+      Serial.print(Output1);
+      Serial.print("\t");
+      Serial.print(Output2);
+      Serial.print("\t");
+      Serial.print(Output3);
+      Serial.print("\t");
+      Serial.print(Output4);
+      Serial.print("\t");        
+      Serial.print(s[0]);
+      Serial.print("\t");
+      Serial.print(s[1]);
+      Serial.print("\t");
+      Serial.print(s[2]);
+      Serial.print("\t");
+      Serial.print(s[3]);
+      Serial.print("\t");
+       Serial.print("\n"); 
+       
+        getStability();          
+            }
+    break;
+    
+// ------------------------------------ ( 3 LEFT) ------------------------------------
+            case 'L': 
+               getStability();getStability();getStability();getStability();getStability();getStability();
+            getStability();getStability();getStability();getStability();getStability();getStability();
+            getStability();getStability();getStability();getStability();getStability();getStability();
+                getStability();getStability();getStability();
+  if(m[0]>1100) {          
+  m[0] = m[0]-1;}
+ if(m[3]>1100){
+  m[3] = m[3]-1;}
+  p[0] = m[0] ;
+  p[1] =m[1]  ;
+  p[2] =m[2];
+  p[3] =m[3];
+              motor1.writeMicroseconds(s[0]);
+              motor2.writeMicroseconds(s[1]);
+              motor3.writeMicroseconds(s[2]);
+              motor4.writeMicroseconds(s[3]); 
+             
+      Serial.print("Left\t"); Serial.print("\t");
+      Serial.print(Output1);
+      Serial.print("\t");
+      Serial.print(Output2);
+      Serial.print("\t");
+      Serial.print(Output3);
+      Serial.print("\t");
+      Serial.print(Output4);
+      Serial.print("\t");
+      Serial.print(s[0]);
+      Serial.print("\t");
+      Serial.print(s[1]);
+      Serial.print("\t");
+      Serial.print(s[2]);
+      Serial.print("\t");
+      Serial.print(s[3]);
+      Serial.print("\t");
+       Serial.print("\n"); 
+      
+         getStability();         
+            break;   
+    
+    
+// ------------------------------------ ( 4 BWD) ------------------------------------
+            case 'B': 
+               getStability();getStability();getStability();getStability();getStability();getStability();
+            getStability();getStability();getStability();getStability();getStability();getStability();
+            getStability();getStability();getStability();getStability();getStability();getStability();
+                getStability();getStability();getStability();
+  if(m[2]>1100){ 
+  m[2] = m[2]-1;
+  }
+  if(m[3]>1100){
+  m[3] = m[3]-1;}  
+  p[0] = m[0] ;
+  p[1] =m[1]  ;
+  p[2] =m[2];
+  p[3] =m[3]; 
+              motor1.writeMicroseconds(s[0]);
+              motor2.writeMicroseconds(s[1]);
+              motor3.writeMicroseconds(s[2]);
+              motor4.writeMicroseconds(s[3]);    
+      Serial.print("Back\t"); Serial.print("\t");
+      Serial.print(Output1);
+      Serial.print("\t");
+      Serial.print(Output2);
+      Serial.print("\t");
+      Serial.print(Output3);
+      Serial.print("\t");
+      Serial.print(Output4);
+      Serial.print("\t");    
+      Serial.print(s[0]);
+      Serial.print("\t");
+      Serial.print(s[1]);
+      Serial.print("\t");
+      Serial.print(s[2]);
+      Serial.print("\t");
+      Serial.print(s[3]);
+      Serial.print("\t");
+       Serial.print("\n");
+       
+         getStability();     
+    break;
+           
+    
+// ------------------------------------ ( 5 FWD) ------------------------------------
+            case 'F':
+               getStability();getStability();getStability();getStability();getStability();getStability();
+            getStability();getStability();getStability();getStability();getStability();getStability();
+            getStability();getStability();getStability();getStability();getStability();getStability();
+                getStability();getStability();getStability();
+            if(m[0]>1100){ 
+                      m[0] = m[0]-1;
+                         }
+            if(m[1]>1100){
+                       m[1] = m[1]-1;}
+                       p[0] = m[0] ;
+  p[1] =m[1]  ;
+  p[2] =m[2];
+  p[3] =m[3];
+              motor1.writeMicroseconds(s[0]);
+              motor2.writeMicroseconds(s[1]);
+              motor3.writeMicroseconds(s[2]);
+              motor4.writeMicroseconds(s[3]); 
+     Serial.print("Front\t"); Serial.print("\t");
+     Serial.print(Output1);
+      Serial.print("\t");
+      Serial.print(Output2);
+      Serial.print("\t");
+      Serial.print(Output3);
+      Serial.print("\t");
+      Serial.print(Output4);
+      Serial.print("\t");         
+      Serial.print(s[0]);
+      Serial.print("\t");
+      Serial.print(s[1]);
+      Serial.print("\t");
+      Serial.print(s[2]);
+      Serial.print("\t");
+      Serial.print(s[3]);
+      Serial.print("\t");
+       Serial.print("\n"); 
+       
+        getStability();      
+             break;
+    
+// ------------------------------------ ( 6 Down) ------------------------------------
+            case 'D':   getStability();getStability();getStability();getStability();getStability();getStability();
+            getStability();getStability();getStability();getStability();getStability();getStability();
+            getStability();getStability();getStability();getStability();getStability();getStability();
+                getStability();getStability();getStability();
+            if((m[0]>1100)||(m[1]>1100)||(m[2]>1100)||(m[3]>1100)){
+
+  m[0] = m[0]-1 ;
+  m[1] =m[1]-1  ;
+  m[2] =  m[2]-1;
+  m[3] = m[3]-1;   
+    
+}
+ p[0] = m[0] ;
+  p[1] =m[1]  ;
+  p[2] =m[2];
+  p[3] =m[3];
+              motor1.writeMicroseconds(s[0]);
+              motor2.writeMicroseconds(s[1]);
+              motor3.writeMicroseconds(s[2]);
+              motor4.writeMicroseconds(s[3]);
+    Serial.print("Down\t"); Serial.print("\t");
+     Serial.print(Output1);
+      Serial.print("\t");
+      Serial.print(Output2);
+      Serial.print("\t");
+      Serial.print(Output3);
+      Serial.print("\t");
+      Serial.print(Output4);
+      Serial.print("\t");           
+      Serial.print(s[0]);
+      Serial.print("\t");
+      Serial.print(s[1]);
+      Serial.print("\t");
+      Serial.print(s[2]);
+      Serial.print("\t");
+      Serial.print(s[3]);
+      Serial.print("\t");
+       Serial.print("\n"); 
+       getStability();
+              
+             break;
+    
+    
+// ------------------------------------ ( 7 stop) ------------------------------------
+            case 'S':  
+               getStability();getStability();getStability();getStability();getStability();getStability();
+            getStability();getStability();getStability();getStability();getStability();getStability();
+            getStability();getStability();getStability();getStability();getStability();getStability();
+                getStability();getStability();getStability();  
+             if(m[0]>700||m[1]>700||m[2]>700||m[3]>700){
+
+  m[0] = 750 ;
+  m[1] =750  ;
+  m[2] =  750;
+  m[3] = 750;   
+    
+}
+ p[0] = m[0] ;
+  p[1] =m[1]  ;
+  p[2] =m[2];
+  p[3] =m[3];
+              motor1.writeMicroseconds(s[0]);
+              motor2.writeMicroseconds(s[1]);
+              motor3.writeMicroseconds(s[2]);
+              motor4.writeMicroseconds(s[3]);  
+     Serial.print("Stop\t");  Serial.print("\t");
+        Serial.print(Output1);
+      Serial.print("\t");
+      Serial.print(Output2);
+      Serial.print("\t");
+      Serial.print(Output3);
+      Serial.print("\t");
+      Serial.print(Output4);
+      Serial.print("\t");        
+      Serial.print(s[0]);
+      Serial.print("\t");
+      Serial.print(s[1]);
+      Serial.print("\t");
+      Serial.print(s[2]);
+      Serial.print("\t");
+      Serial.print(s[3]);
+      Serial.print("\t");
+      Serial.print("\n"); 
+      getStability();
+      break;
+    
+            default: 
+            getStability();
+            break;
+           
+          } // switch     
+}//if
+else{
+     getStability();getStability();getStability();getStability();getStability();getStability();
+            getStability();getStability();getStability();getStability();getStability();getStability();
+            getStability();getStability();getStability();getStability();getStability();getStability();
+                getStability();getStability();getStability();
+ if(m[0]>700||m[1]>700||m[2]>700||m[3]>700){
+
+  m[0] = m[0]-1 ;
+  m[1] =m[1]-1  ;
+  m[2] =  m[2]-1;
+  m[3] = m[3]-1;   
+    
+}
+ p[0] = m[0] ;
+  p[1] =m[1]  ;
+  p[2] =m[2];
+  p[3] =m[3];
+              motor1.writeMicroseconds(s[0]);
+              motor2.writeMicroseconds(s[1]);
+              motor3.writeMicroseconds(s[2]);
+              motor4.writeMicroseconds(s[3]);  
+      Serial.print("failed\t");
+        Serial.print("\t");
+        Serial.print(Output1);
+      Serial.print("\t");
+      Serial.print(Output2);
+      Serial.print("\t");
+      Serial.print(Output3);
+      Serial.print("\t");
+      Serial.print(Output4);
+      Serial.print("\t");        
+      Serial.print(s[0]);
+      Serial.print("\t");
+      Serial.print(s[1]);
+      Serial.print("\t");
+      Serial.print(s[2]);
+      Serial.print("\t");
+      Serial.print(s[3]);
+      Serial.print("\t");
+       Serial.print("\n");}
+       
+      if((Serial.available() && Serial.read())){
+           getStability();getStability();getStability();getStability();getStability();getStability();
+            getStability();getStability();getStability();getStability();getStability();getStability();
+            getStability();getStability();getStability();getStability();getStability();getStability();
+                getStability();getStability();getStability();
+        if(m[0]>700||m[1]>700||m[2]>700||m[3]>700){
+
+  m[0] = m[0]-1 ;
+  m[1] =m[1]-1  ;
+  m[2] =  m[2]-1;
+  m[3] = m[3]-1;   
+    
+}
+ p[0] = m[0] ;
+  p[1] =m[1]  ;
+  p[2] =m[2];
+  p[3] =m[3];
+              motor1.writeMicroseconds(s[0]);
+              motor2.writeMicroseconds(s[1]);
+              motor3.writeMicroseconds(s[2]);
+              motor4.writeMicroseconds(s[3]);  
+     Serial.print("Final stop\t");
+        Serial.print("\t");
+        Serial.print(Output1);
+      Serial.print("\t");
+      Serial.print(Output2);
+      Serial.print("\t");
+      Serial.print(Output3);
+      Serial.print("\t");
+      Serial.print(Output4);
+      Serial.print("\t");        
+      Serial.print(s[0]);
+      Serial.print("\t");
+      Serial.print(s[1]);
+      Serial.print("\t");
+      Serial.print(s[2]);
+      Serial.print("\t");
+      Serial.print(s[3]);
+      Serial.print("\t");
+       Serial.print("\n");
+        // empty buffer
+      }
+  
+    
+}
+void getposition()
+{
+    // wait for MPU interrupt or extra packet(s) available
+    while (!mpuInterrupt && fifoCount < packetSize)
+    {
+    }
+
+    // reset interrupt flag and get INT_STATUS byte
+    mpuInterrupt = false;
+    mpuIntStatus = mpu.getIntStatus();
+  
+    // get Current FIFO count
+    fifoCount = mpu.getFIFOCount();
+
+    // check for overflow (this should never happen unless our code is too inefficient)
+    if ( (mpuIntStatus & 0x10) || fifoCount == 1024)
+    {
+      mpu.resetFIFO();        // reset so we can continue cleanly
+    } 
+  if ((mpuIntStatus & 0x10) || fifoCount == 1024) {
+        // reset so we can continue cleanly
+        mpu.resetFIFO();
+       
+
+    // otherwise, check for DMP data ready interrupt (this should happen frequently)
+    }
+    else if (mpuIntStatus & 0x02)
+    {     
+      while (fifoCount < packetSize) fifoCount = mpu.getFIFOCount();   // wait for correct available data length, should be a VERY short wait
+      mpu.getFIFOBytes(fifoBuffer, packetSize);                        // read a packet from FIFO
+
+      // track FIFO count here in case there is > 1 packet available
+      // (this lets us immediately read more without waiting for an interrupt)
+      fifoCount -= packetSize;
+
+      /*===== display Euler ANGLES in DEGREES ======*/
+      mpu.dmpGetQuaternion      (&q, fifoBuffer);
+      mpu.dmpGetGravity         (&gravity, &q);
+      mpu.dmpGetYawPitchRoll    (ypr, &q, &gravity);    
+      ypr[1] = ypr[1] * 180/M_PI;  // Pitch
+      ypr[2] = ypr[2] * 180/M_PI;  // Roll  
+       ypr[0] = ypr[0] * 180/M_PI;     
+    }    
+}
+void getStability()
+{
+      if((p[0]>1400)||(p[1]>1400)||(p[2]>1400)||(p[3]>1400)){
+
+  p[0] = 1400 ;
+  p[1] =1400  ;
+  p[2] =  1400;
+  p[3] = 1400;   
+    
+}
+   /*   //=========================== 1 ======*/  // Pitch BWD 
+    if( ypr[1] >= (yprd[0] + low2) &&     ypr[2] >= (yprd[1] - low2)  &&  ypr[2] <= (yprd[1] + low2))    
+    {
+       // yaw control disabled for stabilization testing...
+  s[0] = p[0] - (Output2/20) - (Output1/20);// // // + Output3;
+  s[1] = p[1] - (Output1/20) - (Output2/20);// // - Output3;
+  s[2] = p[2] + (Output2/5) + (Output1/5);// // // + Output3;
+  s[3] = p[3] + (Output1/5) + (Output2/5);// // - Output3;
+   if(s[0]<700||s[1]<700||s[2]<700||s[3]<700)
+  {
+    s[0]=700;
+    s[1]=700;
+    s[2]=700;
+    s[3]=700;
+  }
+   m[0]=s[0];
+       m[1]=s[1];
+       m[2]=s[2];
+       m[3]=s[3];
+     motor1.writeMicroseconds(s[0]);
+      motor2.writeMicroseconds(s[1]);
+      motor3.writeMicroseconds(s[2]);
+      motor4.writeMicroseconds(s[3]);
+     Serial.print("stability111\t");
+      Serial.print(Output1);
+      Serial.print("\t");
+      Serial.print(Output2);
+      Serial.print("\t");
+      Serial.print(Output3);
+      Serial.print("\t");
+      Serial.print(Output4);
+      Serial.print("\t");
+    Serial.print(s[0]);
+      Serial.print("\t");
+      Serial.print(s[1]);
+      Serial.print("\t");
+      Serial.print(s[2]);
+      Serial.print("\t");
+      Serial.print(s[3]);
+      Serial.print("\t");
+       Serial.print("\n");
+        
+    }   
+  
+//=========================== 2 ======*/  // Pitch FWD  
+    if( ypr[1] <= (yprd[0] - low2) &&     ypr[2] >= (yprd[1] - low2)  &&  ypr[2] <= (yprd[1] + low2) )  
+    {
+       // yaw control disabled for stabilization testing...
+
+    s[0] =p[0] + (Output2/5) - (Output1/5);// // + Output3;
+  s[1] = p[1] - (Output1/5) + (Output2/5);// // - Output3;
+  s[2] = p[2] -(Output2/20) + (Output1/20);// // + Output3;
+  s[3] = p[3] + (Output1/20) - (Output2/20);// // - Output3; 
+   if(s[0]<700||s[1]<700||s[2]<700||s[3]<700)
+  {
+    s[0]=700;
+    s[1]=700;
+    s[2]=700;
+    s[3]=700;
+  }
+   m[0]=s[0];
+       m[1]=s[1];
+       m[2]=s[2];
+       m[3]=s[3];   
+ motor1.writeMicroseconds(s[0]);
+      motor2.writeMicroseconds(s[1]);
+      motor3.writeMicroseconds(s[2]);
+      motor4.writeMicroseconds(s[3]);
+  Serial.print("stability2\t");
+      Serial.print(Output1);
+      Serial.print("\t");
+      Serial.print(Output2);
+      Serial.print("\t");
+      Serial.print(Output3);
+      Serial.print("\t");
+      Serial.print(Output4);
+      Serial.print("\t");
+   Serial.print(s[0]);
+      Serial.print("\t");
+      Serial.print(s[1]);
+      Serial.print("\t");
+      Serial.print(s[2]);
+      Serial.print("\t");
+      Serial.print(s[3]);
+      Serial.print("\t");
+       Serial.print("\n");
+      
+    }   
+  
+  
+//========================================== Roll =====================*/  
+//===================== ====== 3 ======*/  // Roll LEFT
+    if( ypr[2] <= (yprd[1] - low2) &&     ypr[1] >= (yprd[0] - low2)  &&  ypr[1] <= (yprd[0] + low2) )   
+    {
+      // yaw control disabled for stabilization testing...
+   s[0] =p[0] - (Output2/5) - (Output1/5);// // + Output3;
+  s[1] = p[1] + (Output1/20) + (Output2/20);// // - Output3;
+  s[2] = p[2] + (Output2/20) + (Output1/20);// // + Output3;
+  s[3] = p[3] - (Output1/5) - (Output2/5);// // - Output3; 
+   if(s[0]<700||s[1]<700||s[2]<700||s[3]<700)
+  {
+    s[0]=700;
+    s[1]=700;
+    s[2]=700;
+    s[3]=700;
+  }
+   m[0]=s[0];
+       m[1]=s[1];
+       m[2]=s[2];
+       m[3]=s[3];   
+              motor1.writeMicroseconds(s[0]);
+      motor2.writeMicroseconds(s[1]);
+      motor3.writeMicroseconds(s[2]);
+     motor4.writeMicroseconds(s[3]); 
+          Serial.print("stability3\t");
+      Serial.print(Output1);
+      Serial.print("\t");
+      Serial.print(Output2);
+      Serial.print("\t");
+      Serial.print(Output3);
+      Serial.print("\t");
+      Serial.print(Output4);
+      Serial.print("\t");
+      Serial.print(s[0]);
+      Serial.print("\t");
+      Serial.print(s[1]);
+      Serial.print("\t");
+      Serial.print(s[2]);
+      Serial.print("\t");
+      Serial.print(s[3]);
+      Serial.print("\t");
+       Serial.print("\n");
+ 
+    }   
+    
+//=========================== 4 ======*/  // Roll RIGHT  
+    if( ypr[2] >= (yprd[1] + low2) &&     ypr[1] >= (yprd[0] - low2)  &&  ypr[1] <= (yprd[0] + low2) )
+    {
+      // yaw control disabled for stabilization testing...
+  s[0] = p[0] - (Output2/20) - (Output1/20);// // + Output3;
+  s[1] = p[1] + (Output1/5) + (Output2/5);// // - Output3;
+  s[2] = p[2] + (Output2/5) + (Output1/5);// // + Output3;
+  s[3] = p[3] - (Output1/20) - (Output2/20);// // - Output3;
+   if(s[0]<700||s[1]<700||s[2]<700||s[3]<700)
+  {
+    s[0]=700;
+    s[1]=700;
+    s[2]=700;
+    s[3]=700;
+  }   
+      motor1.writeMicroseconds(s[0]);
+      motor2.writeMicroseconds(s[1]);
+      motor3.writeMicroseconds(s[2]);
+      motor4.writeMicroseconds(s[3]);
+       m[0]=s[0];
+       m[1]=s[1];
+       m[2]=s[2];
+       m[3]=s[3];
+    Serial.print("stability4\t");
+      Serial.print(Output1);
+      Serial.print("\t");
+      Serial.print(Output2);
+      Serial.print("\t");
+      Serial.print(Output3);
+      Serial.print("\t");
+      Serial.print(Output4);
+      Serial.print("\t");
+   Serial.print(s[0]);
+      Serial.print("\t");
+      Serial.print(s[1]);
+      Serial.print("\t");
+      Serial.print(s[2]);
+      Serial.print("\t");
+      Serial.print(s[3]);
+      Serial.print("\t");
+       Serial.print("\n");
+     
+    }   
+  
+  
+//========================================== Pitch & Roll =====================*/    
+//================================= 5 ======*/  // Picth Bwd && Roll Right
+    if( ypr[1] >= (yprd[0] + low2) &&  ypr[2] >= (yprd[1] + low2) )
+    {
+       // yaw control disabled for stabilization testing...
+    s[0] =p[0] - (Output2/20) - (Output1/20);// // + Output3;
+  s[1] = p[1] + (Output1/10) - (Output2/10);// // - Output3;
+  s[2] = p[2] + (Output2/5) + (Output1/5);// // + Output3;
+  s[3] = p[3] + (Output1/10) - (Output2/10);// // - Output3; 
+   if(s[0]<700||s[1]<700||s[2]<700||s[3]<700)
+  {
+    s[0]=700;
+    s[1]=700;
+    s[2]=700;
+    s[3]=700;
+  } 
+   m[0]=s[0];
+       m[1]=s[1];
+       m[2]=s[2];
+       m[3]=s[3];     
+     motor1.writeMicroseconds(s[0]);
+      motor2.writeMicroseconds(s[1]);
+      motor3.writeMicroseconds(s[2]);
+      motor4.writeMicroseconds(s[3]);
+     Serial.print("stability5\t");
+      Serial.print(Output1);
+      Serial.print("\t");
+      Serial.print(Output2);
+      Serial.print("\t");
+      Serial.print(Output3);
+      Serial.print("\t");
+      Serial.print(Output4);
+      Serial.print("\t");
+   Serial.print(s[0]);
+      Serial.print("\t");
+      Serial.print(s[1]);
+      Serial.print("\t");
+      Serial.print(s[2]);
+      Serial.print("\t");
+      Serial.print(s[3]);
+      Serial.print("\t");
+       Serial.print("\n");
+    }   
+  
+//=========================== 6 ======*/  // Picth Bwd && Roll Left  
+    if( ypr[1] >= (yprd[0] + low2) && ypr[2] <= (yprd[1] - low2)) 
+    {
+       // yaw control disabled for stabilization testing...
+    s[0] =p[0] + (Output2/10) - (Output1/10);// // + Output3;
+  s[1] = p[1] - (Output1/20) + (Output2/20);// // - Output3;
+  s[2] = p[2] + (Output2/10) - (Output1/10);// // + Output3;
+  s[3] = p[3] + (Output1/5) - (Output2/5);// // - Output3; 
+   if(s[0]<700||s[1]<700||s[2]<700||s[3]<700)
+  {
+    s[0]=700;
+    s[1]=700;
+    s[2]=700;
+    s[3]=700;
+  }
+   m[0]=s[0];
+       m[1]=s[1];
+       m[2]=s[2];
+       m[3]=s[3];  
+      motor1.writeMicroseconds(s[0]);
+      motor2.writeMicroseconds(s[1]);
+      motor3.writeMicroseconds(s[2]);
+      motor4.writeMicroseconds(s[3]); 
+     Serial.print("stability6\t");
+      Serial.print(Output1);
+      Serial.print("\t");
+      Serial.print(Output2);
+      Serial.print("\t");
+      Serial.print(Output3);
+      Serial.print("\t");
+      Serial.print(Output4);
+      Serial.print("\t");
+    Serial.print(s[0]);
+      Serial.print("\t");
+      Serial.print(s[1]);
+      Serial.print("\t");
+      Serial.print(s[2]);
+      Serial.print("\t");
+      Serial.print(s[3]);
+      Serial.print("\t");
+       Serial.print("\n");
+    }   
+  
+//=========================== 7 ======*/  // Picth Fwd && Roll Left  
+    if( ypr[1] <= (yprd[0] - low2) && ypr[2] <= (yprd[1] - low2) )
+    {
+       // yaw control disabled for stabilization testing...
+    s[0] =p[0] - (Output2/2) - (Output1);// // + Output3;
+  s[1] = p[1] + (Output1/10) - (Output2/10);// // - Output3;
+  s[2] = p[2] + (Output2/10) + (Output1/10);// // + Output3;
+  s[3] = p[3] + (Output1/10) - (Output2/10);// // - Output3;
+   if(s[0]<700||s[1]<700||s[2]<700||s[3]<700)
+  {
+    s[0]=700;
+    s[1]=700;
+    s[2]=700;
+    s[3]=700;
+  }
+   m[0]=s[0];
+       m[1]=s[1];
+       m[2]=s[2];
+       m[3]=s[3];  
+      motor1.writeMicroseconds(s[0]);
+      motor2.writeMicroseconds(s[1]);
+      motor3.writeMicroseconds(s[2]);
+      motor4.writeMicroseconds(s[3]); 
+      Serial.print("stability7\t");
+      Serial.print(Output1);
+      Serial.print("\t");
+      Serial.print(Output2);
+      Serial.print("\t");
+      Serial.print(Output3);
+      Serial.print("\t");
+      Serial.print(Output4);
+      Serial.print("\t");
+     Serial.print(s[0]);
+      Serial.print("\t");
+      Serial.print(s[1]);
+      Serial.print("\t");
+      Serial.print(s[2]);
+      Serial.print("\t");
+      Serial.print(s[3]);
+      Serial.print("\t");
+       Serial.print("\n");
+    }   
+  
+//=========================== 8 ======*/  // Picth Fwd && Roll Right  
+   if( ypr[1] <= (yprd[0] - low2) &&  ypr[2] >= (yprd[1] + low2) ) 
+    {
+       // yaw control disabled for stabilization testing...
+   s[0] =p[0] + (Output2/10) + (Output1/10);// // + Output3;
+  s[1] = p[1] - (Output1/5) + (Output2/5);// // - Output3;
+  s[2] = p[2] + (Output2/10) + (Output1/10);// // + Output3;
+  s[3] = p[3] + (Output1/20) - (Output2/20);// // - Output3;
+   if(s[0]<700||s[1]<700||s[2]<700||s[3]<700)
+  {
+    s[0]=700;
+    s[1]=700;
+    s[2]=700;
+    s[3]=700;
+  }    
+   m[0]=s[0];
+       m[1]=s[1];
+       m[2]=s[2];
+       m[3]=s[3]; 
+      motor1.writeMicroseconds(s[0]);
+      motor2.writeMicroseconds(s[1]);
+      motor3.writeMicroseconds(s[2]);
+      motor4.writeMicroseconds(s[3]);  
+      Serial.print("stability8\t");
+      Serial.print(Output1);
+      Serial.print("\t");
+      Serial.print(Output2);
+      Serial.print("\t");
+      Serial.print(Output3);
+      Serial.print("\t");
+      Serial.print(Output4);
+      Serial.print("\t");
+   Serial.print(s[0]);
+      Serial.print("\t");
+      Serial.print(s[1]);
+      Serial.print("\t");
+      Serial.print(s[2]);
+      Serial.print("\t");
+      Serial.print(s[3]);
+      Serial.print("\t");
+       Serial.print("\n"); 
+    }   
+//===================== If Input Angles are Within parameters of Datum
+
+    if( ypr[1] >= (yprd[0] - low2) && ypr[1] <= (yprd[0] + low2)   &&   ypr[2] >= (yprd[1] - low2) && ypr[2] <= (yprd[1] + low2))
+    {
+     // yaw control disabled for stabilization testing...
+  s[0] = p[0] + (Output2/10) + (Output1/10);// // + Output3;
+  s[1] = p[1] + (Output1/10) - (Output2/10);// // - Output3;
+  s[2] = p[2] + (Output2/10) - (Output1/10);// // + Output3;
+  s[3] = p[3] - (Output1/10) - (Output2/10);// // - Output3; 
+  if(s[0]<700||s[1]<700||s[2]<700||s[3]<700)
+  {
+    s[0]=700;
+    s[1]=700;
+    s[2]=700;
+    s[3]=700;
+  }
+   m[0]=s[0];
+       m[1]=s[1];
+       m[2]=s[2];
+       m[3]=s[3];     
+     motor1.writeMicroseconds(s[0]);
+      motor2.writeMicroseconds(s[1]);
+      motor3.writeMicroseconds(s[2]);
+      motor4.writeMicroseconds(s[3]);
+     Serial.print("stability9\t");
+      Serial.print(Output1);
+      Serial.print("\t");
+      Serial.print(Output2);
+      Serial.print("\t");
+      Serial.print(Output3);
+      Serial.print("\t");
+      Serial.print(Output4);
+      Serial.print("\t");
+      
+      Serial.print(s[0]);
+      Serial.print("\t");
+      Serial.print(s[1]);
+      Serial.print("\t");
+      Serial.print(s[2]);
+      Serial.print("\t");
+      Serial.print(s[3]);
+      Serial.print("\t");
+       Serial.print("\n");
+      
+    }
+   }  
+void pid_initialize() {
+  roll_controller.SetOutputLimits(ROLL_PID_MIN,ROLL_PID_MAX);
+  pitch_controller.SetOutputLimits(PITCH_PID_MIN,PITCH_PID_MAX);
+  yaw_controller.SetOutputLimits(YAW_PID_MIN,YAW_PID_MAX);
+  roll_controller.SetMode(AUTOMATIC);
+  pitch_controller.SetMode(AUTOMATIC);
+  yaw_controller.SetMode(AUTOMATIC);
+  roll_controller.SetSampleTime(10);
+  pitch_controller.SetSampleTime(10);
+  yaw_controller.SetSampleTime(10);
+}
+
+void pid_update(){
+  pid_roll_in = Input1;
+  pid_pitch_in = Input2;
+  pid_yaw_in = Input3; 
+}
+
+void pid_compute() {
+   roll_controller.Compute();
+   pitch_controller.Compute();
+   yaw_controller.Compute();
+}
